@@ -25,7 +25,7 @@ MallocMetadataMetadata memory_global_metadata;
 
 void *allocateWithMetadata(size_t size, MallocMetadata *prev = NULL)
 {
-    MallocMetadata *metadata = (MallocMetadata *)smalloc(size + sizeof(MallocMetadata));
+    MallocMetadata *metadata = (MallocMetadata *)sbrk(size + sizeof(MallocMetadata));
     if (metadata == NULL)
     {
         return NULL;
