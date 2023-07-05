@@ -282,24 +282,26 @@ void *smalloc(size_t size)
         void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (ptr == MAP_FAILED)
         {
-            return NULL;
+            return nullptr;
         }
 
         MallocMetadata *metadata = (MallocMetadata *)ptr;
         metadata->size = size;
         metadata->is_free = false;
-        metadata->next = NULL;
-        metadata->prev = NULL;
+        metadata->next = nullptr;
+        metadata->prev = nullptr;
 
         memory_global_metadata.num_allocated_blocks++;
         memory_global_metadata.num_meta_data_bytes += sizeof(MallocMetadata);
         memory_global_metadata.num_allocated_bytes += size - sizeof(MallocMetadata);
+
+        return (void *)(metadata + 1);
     }
 
     int index = buddy_array.getAvailableIndex(size);
     if (index == -1)
     {
-        return NULL;
+        return nullptr;
     }
 
     MallocMetadata *curr = buddy_array.head_by_size[index];
@@ -309,6 +311,7 @@ void *smalloc(size_t size)
         curr->is_free = false;
 
         buddy_array.removeFreeBlock(curr);
+        splitAndFree(curr, size);
         return (void *)(curr + 1);
     }
 
