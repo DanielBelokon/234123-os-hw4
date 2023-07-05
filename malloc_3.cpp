@@ -48,7 +48,7 @@ struct BuddyArray
             return NULL;
         }
 
-        return validateMetadata((MallocMetadata *)((size_t)address ^ (1 << getIndex(address->size))));
+        return validateMetadata((MallocMetadata *)((size_t)address ^ getIndex(address->size)));
     }
 
     int getIndex(size_t size)
