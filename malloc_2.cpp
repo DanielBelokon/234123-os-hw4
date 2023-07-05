@@ -20,20 +20,22 @@ struct MallocMetadata
 
 #define MAX_MALLOC_SIZE 100000000
 
-MallocMetadata *head = NULL;
+MallocMetadata *head = nullptr;
 MallocMetadataMetadata memory_global_metadata;
 
-void *allocateWithMetadata(size_t size, MallocMetadata *prev = NULL)
+void *allocateWithMetadata(size_t size, MallocMetadata *prev = nullptr)
 {
     MallocMetadata *metadata = (MallocMetadata *)sbrk(size + sizeof(MallocMetadata));
-    if (metadata == NULL)
+    if (metadata == nullptr)
     {
-        return NULL;
+        return nullptr;
     }
     metadata->size = size;
     metadata->is_free = false;
-    metadata->next = NULL;
+    metadata->next = nullptr;
     metadata->prev = prev;
+    if (prev != nullptr)
+        prev->next = metadata;
     memory_global_metadata.num_allocated_blocks++;
     memory_global_metadata.num_allocated_bytes += size;
     memory_global_metadata.num_meta_data_bytes += sizeof(MallocMetadata);
@@ -44,13 +46,13 @@ void *allocateWithMetadata(size_t size, MallocMetadata *prev = NULL)
 
 void *smalloc(size_t size)
 {
-    if (size == 0 || size > MAX_MALLOC_SIZE - sizeof(MallocMetadata))
+    if (size == 0 || size > MAX_MALLOC_SIZE)
     {
-        return NULL;
+        return nullptr;
     }
 
     // no allocations yet, allocate first block with requested size
-    if (head == NULL)
+    if (head == nullptr)
     {
         void *ptr = allocateWithMetadata(size);
         head = (MallocMetadata *)ptr - 1;
@@ -59,8 +61,8 @@ void *smalloc(size_t size)
 
     // search for free block with at least size bytes
     MallocMetadata *curr = head;
-    MallocMetadata *prev = NULL;
-    while (curr != NULL)
+    MallocMetadata *prev = nullptr;
+    while (curr != nullptr)
     {
         if (curr->is_free && curr->size >= size)
         {
@@ -81,9 +83,9 @@ void *smalloc(size_t size)
 void *scalloc(size_t num, size_t size)
 {
     void *ptr = smalloc(num * size);
-    if (ptr == NULL)
+    if (ptr == nullptr)
     {
-        return NULL;
+        return nullptr;
     }
 
     for (size_t i = 0; i < num * size; i++)
@@ -96,7 +98,7 @@ void *scalloc(size_t num, size_t size)
 
 void sfree(void *p)
 {
-    if (p == NULL)
+    if (p == nullptr)
     {
         return;
     }
@@ -112,10 +114,10 @@ void *srealloc(void *oldp, size_t size)
 {
     if (size == 0 || size > MAX_MALLOC_SIZE)
     {
-        return NULL;
+        return nullptr;
     }
 
-    if (oldp == NULL)
+    if (oldp == nullptr)
     {
         return smalloc(size);
     }
@@ -127,9 +129,9 @@ void *srealloc(void *oldp, size_t size)
     }
 
     void *newp = smalloc(size);
-    if (newp == NULL)
+    if (newp == nullptr)
     {
-        return NULL;
+        return nullptr;
     }
 
     for (size_t i = 0; i < metadata->size; i++)
