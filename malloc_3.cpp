@@ -278,14 +278,14 @@ void *smalloc(size_t size)
         }
 
         MallocMetadata *metadata = (MallocMetadata *)ptr;
-        metadata->size = 1 << buddy_array.getIndex(size);
+        metadata->size = size;
         metadata->is_free = false;
         metadata->next = NULL;
         metadata->prev = NULL;
 
         memory_global_metadata.num_allocated_blocks++;
         memory_global_metadata.num_meta_data_bytes += sizeof(MallocMetadata);
-        memory_global_metadata.num_allocated_bytes += metadata->size - sizeof(MallocMetadata);
+        memory_global_metadata.num_allocated_bytes += size - sizeof(MallocMetadata);
     }
 
     int index = buddy_array.getAvailableIndex(size);
