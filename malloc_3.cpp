@@ -184,9 +184,9 @@ void initialAlloc()
     }
 
     memory_global_metadata.num_allocated_blocks = INIT_BLOCK_COUNT;
-    memory_global_metadata.num_allocated_bytes = MAX_BLOCK_SIZE * INIT_BLOCK_COUNT;
+    memory_global_metadata.num_allocated_bytes = (MAX_BLOCK_SIZE - sizeof(MallocMetadata)) * INIT_BLOCK_COUNT;
     memory_global_metadata.num_free_blocks = INIT_BLOCK_COUNT;
-    memory_global_metadata.num_free_bytes = MAX_BLOCK_SIZE * INIT_BLOCK_COUNT;
+    memory_global_metadata.num_free_bytes = memory_global_metadata.num_allocated_bytes;
     memory_global_metadata.num_meta_data_bytes = INIT_BLOCK_COUNT * sizeof(MallocMetadata);
     memory_global_metadata.size_meta_data = sizeof(MallocMetadata);
 }
@@ -278,10 +278,14 @@ void *smalloc(size_t size)
         }
 
         MallocMetadata *metadata = (MallocMetadata *)ptr;
-        metadata->size = size;
+        metadata->size = 1 << buddy_array.getIndex(size);
         metadata->is_free = false;
         metadata->next = NULL;
         metadata->prev = NULL;
+
+        memory_global_metadata.num_allocated_blocks++;
+        memory_global_metadata.num_meta_data_bytes += sizeof(MallocMetadata);
+        memory_global_metadata.num_allocated_bytes += metadata->size - sizeof(MallocMetadata);
     }
 
     int index = buddy_array.getAvailableIndex(size);
@@ -343,7 +347,8 @@ void sfree(void *p)
         // free with munmap
         munmap(metadata, metadata->size);
         memory_global_metadata.num_allocated_blocks--;
-        memory_global_metadata.num_allocated_bytes -= metadata->size;
+        memory_global_metadata.num_allocated_bytes -=  metadata->size + sizeof(MallocMetadata);
+        memory_global_metadata.num_meta_data_bytes -= sizeof(MallocMetadata);
         return;
     }
 
@@ -367,7 +372,7 @@ void *srealloc(void *oldp, size_t size)
     }
 
     MallocMetadata *metadata = buddy_array.validateMetadata((MallocMetadata *)oldp - 1);
-    if (metadata->size >= size)
+    if (metadata->size  >= size + sizeof(MallocMetadata))
     {
         return oldp;
     }
@@ -378,7 +383,7 @@ void *srealloc(void *oldp, size_t size)
         return NULL;
     }
 
-    for (size_t i = 0; i < metadata->size; i++)
+    for (size_t i = 0; i < metadata->size - sizeof(MallocMetadata); i++)
     {
         ((char *)newp)[i] = ((char *)oldp)[i];
     }
