@@ -44,7 +44,7 @@ void *allocateWithMetadata(size_t size, MallocMetadata *prev = NULL)
 
 void *smalloc(size_t size)
 {
-    if (size == 0 || size > MAX_MALLOC_SIZE)
+    if (size == 0 || size > MAX_MALLOC_SIZE - sizeof(MallocMetadata))
     {
         return NULL;
     }
@@ -65,8 +65,6 @@ void *smalloc(size_t size)
         if (curr->is_free && curr->size >= size)
         {
             curr->is_free = false;
-            memory_global_metadata.num_allocated_blocks++;
-            memory_global_metadata.num_allocated_bytes += curr->size;
             memory_global_metadata.num_free_blocks--;
             memory_global_metadata.num_free_bytes -= curr->size;
 
@@ -108,8 +106,6 @@ void sfree(void *p)
 
     memory_global_metadata.num_free_blocks++;
     memory_global_metadata.num_free_bytes += metadata->size;
-    memory_global_metadata.num_allocated_blocks--;
-    memory_global_metadata.num_allocated_bytes -= metadata->size;
 }
 
 void *srealloc(void *oldp, size_t size)
