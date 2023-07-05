@@ -31,7 +31,7 @@ MallocMetadataMetadata memory_global_metadata;
 
 struct BuddyArray
 {
-    MallocMetadata *head_by_size[MAX_BLOCK_POWER + 1]{0};
+    MallocMetadata *head_by_size[MAX_BLOCK_POWER + 1]{nullptr};
     void *start_address = nullptr;
 
     int cookie = 0x12345678;
@@ -105,7 +105,7 @@ struct BuddyArray
         block->prev = NULL;
 
         memory_global_metadata.num_free_blocks--;
-        memory_global_metadata.num_free_bytes -= block->size;
+        memory_global_metadata.num_free_bytes -= block->size + sizeof(MallocMetadata);
     }
 
     void insertFreeBlock(MallocMetadata *block)
@@ -139,7 +139,7 @@ struct BuddyArray
         }
 
         memory_global_metadata.num_free_blocks++;
-        memory_global_metadata.num_free_bytes += block->size;
+        memory_global_metadata.num_free_bytes += block->size - sizeof(MallocMetadata);
     }
 
     MallocMetadata *validateMetadata(MallocMetadata *metadata)
@@ -208,11 +208,13 @@ void splitAndFree(MallocMetadata *curr, size_t size)
     buddy->prev = NULL;
     buddy->cookie = buddy_array.cookie;
 
+    curr->size /= 2;
+
     // add to free list
     buddy_array.insertFreeBlock(buddy);
 
     memory_global_metadata.num_allocated_blocks++;
-
+    memory_global_metadata.num_meta_data_bytes += sizeof(MallocMetadata);
     splitAndFree(buddy, size);
 }
 
@@ -247,6 +249,8 @@ void mergeFree(MallocMetadata *curr)
         buddy_array.insertFreeBlock(merged);
 
         memory_global_metadata.num_allocated_blocks--;
+        memory_global_metadata.num_meta_data_bytes -= sizeof(MallocMetadata);
+        
         mergeFree(merged);
     }
 }
@@ -300,16 +304,7 @@ void *smalloc(size_t size)
     {
         curr->is_free = false;
 
-        // remove from free list
-        if (curr->prev == NULL)
-        {
-            buddy_array.head_by_size[index] = curr->next;
-        }
-        else
-        {
-            curr->prev->next = curr->next;
-        }
-
+        buddy_array.removeFreeBlock(curr);
         return (void *)(curr + 1);
     }
 
