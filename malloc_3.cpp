@@ -159,9 +159,8 @@ BuddyArray buddy_array;
 void initialAlloc()
 {
     // check alignment
-    if ((size_t)sbrk(0) ^ 1)
-        sbrk(1);
-    buddy_array.start_address = sbrk(MAX_BLOCK_SIZE * INIT_BLOCK_COUNT);
+    size_t alignment = ~((size_t)sbrk(0) & 128 * 1024);
+    buddy_array.start_address = (char *)sbrk(MAX_BLOCK_SIZE * INIT_BLOCK_COUNT + alignment) + alignment;
     buddy_array.head_by_size[MAX_BLOCK_POWER] = (MallocMetadata *)buddy_array.start_address;
 
     buddy_array.cookie = 0x1337; // todo: randomize
