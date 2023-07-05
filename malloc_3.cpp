@@ -40,17 +40,17 @@ struct BuddyArray
 
     MallocMetadata *getBuddy(MallocMetadata *address)
     {
-        if (address == NULL || address < start_address || address >= (MallocMetadata *)((char *)start_address + MAX_BLOCK_SIZE * INIT_BLOCK_COUNT))
+        if (address == nullptr || address < start_address || address >= (MallocMetadata *)((char *)start_address + MAX_BLOCK_SIZE * INIT_BLOCK_COUNT))
         {
-            return NULL;
+            return nullptr;
         }
 
         if (address->size >= MAX_BLOCK_SIZE)
         {
-            return NULL;
+            return nullptr;
         }
 
-        return validateMetadata((MallocMetadata *)((size_t)address ^ getIndex(address->size)));
+        return validateMetadata((MallocMetadata *)((size_t)address ^ address->size));
     }
 
     int getIndex(size_t size)
@@ -71,7 +71,7 @@ struct BuddyArray
 
         for (int i = index; i < MAX_BLOCK_POWER + 1; i++)
         {
-            if (head_by_size[i] != NULL)
+            if (head_by_size[i] != nullptr)
             {
                 return i;
             }
@@ -89,7 +89,7 @@ struct BuddyArray
             return;
         }
 
-        if (block->prev == NULL)
+        if (block->prev == nullptr)
         {
             head_by_size[index] = block->next;
         }
@@ -98,16 +98,16 @@ struct BuddyArray
             block->prev->next = block->next;
         }
 
-        if (block->next != NULL)
+        if (block->next != nullptr)
         {
             block->next->prev = block->prev;
         }
 
-        block->next = NULL;
-        block->prev = NULL;
+        block->next = nullptr;
+        block->prev = nullptr;
 
         memory_global_metadata.num_free_blocks--;
-        memory_global_metadata.num_free_bytes -= block->size + sizeof(MallocMetadata);
+        memory_global_metadata.num_free_bytes -= block->size - sizeof(MallocMetadata);
     }
 
     void insertFreeBlock(MallocMetadata *block)
@@ -121,22 +121,32 @@ struct BuddyArray
 
         // find the right place to insert
         MallocMetadata *curr = head_by_size[index];
-        MallocMetadata *prev = NULL;
-        while (curr != NULL && curr < block)
+        MallocMetadata *prev = nullptr;
+        while (curr != nullptr && curr < block)
         {
+            validateMetadata(curr);
             prev = curr;
-            curr = validateMetadata(curr->next);
+            curr = curr->next;
         }
 
-        if (prev == NULL)
+        if (prev == nullptr)
         {
             head_by_size[index] = block;
+            block->next = curr;
+            block->prev = nullptr;
+            if (curr != nullptr)
+            {
+                curr->prev = block;
+            }
         }
         else
         {
             block->next = curr;
             prev->next = block;
-            curr->prev = block;
+            if (curr != nullptr)
+            {
+                curr->prev = block;
+            }
             block->prev = prev;
         }
 
@@ -161,8 +171,23 @@ BuddyArray buddy_array;
 void initialAlloc()
 {
     // check alignment
-    size_t alignment = ~((size_t)sbrk(0) & 128 * 1024);
-    buddy_array.start_address = (char *)sbrk(MAX_BLOCK_SIZE * INIT_BLOCK_COUNT + alignment) + alignment;
+    // size_t alignment = 32 * 128 * 1024 - ((size_t)sbrk(0) & 32 * 128 * 1024);
+    // buddy_array.start_address = (char *)sbrk(MAX_BLOCK_SIZE * INIT_BLOCK_COUNT + alignment) + alignment;
+
+    long alignment_mask = MAX_BLOCK_SIZE - 1;
+
+    // Get the current break.
+    long current_address = (long)sbrk(0);
+
+    // Calculate the misalignment of the current break, if any.
+    long misalignment = current_address & alignment_mask;
+
+    // If misaligned, calculate the adjustment to the next block, otherwise 0.
+    long adjustment = misalignment ? MAX_BLOCK_SIZE - misalignment : 0;
+
+    // Allocate the 32 blocks of 128 KB each, plus any necessary alignment.
+    buddy_array.start_address = (char *)sbrk(MAX_BLOCK_SIZE * INIT_BLOCK_COUNT + adjustment) + adjustment;
+
     buddy_array.head_by_size[MAX_BLOCK_POWER] = (MallocMetadata *)buddy_array.start_address;
 
     buddy_array.cookie = 0x1337; // todo: randomize
@@ -174,7 +199,7 @@ void initialAlloc()
         metadata->size = MAX_BLOCK_SIZE;
         metadata->is_free = true;
         metadata->next = (MallocMetadata *)((char *)curBlock + MAX_BLOCK_SIZE);
-        metadata->prev = NULL;
+        metadata->prev = nullptr;
         metadata->cookie = buddy_array.cookie;
         curBlock = metadata->next;
     }
@@ -208,8 +233,8 @@ void splitAndFree(MallocMetadata *curr, size_t size)
 
     buddy->size = curr->size / 2;
     buddy->is_free = true;
-    buddy->next = NULL;
-    buddy->prev = NULL;
+    buddy->next = nullptr;
+    buddy->prev = nullptr;
     buddy->cookie = buddy_array.cookie;
 
     curr->size /= 2;
@@ -218,8 +243,9 @@ void splitAndFree(MallocMetadata *curr, size_t size)
     buddy_array.insertFreeBlock(buddy);
 
     memory_global_metadata.num_allocated_blocks++;
+    memory_global_metadata.num_allocated_bytes -= sizeof(MallocMetadata);
     memory_global_metadata.num_meta_data_bytes += sizeof(MallocMetadata);
-    splitAndFree(buddy, size);
+    splitAndFree(curr, size);
 }
 
 void mergeFree(MallocMetadata *curr)
@@ -231,7 +257,7 @@ void mergeFree(MallocMetadata *curr)
     }
 
     MallocMetadata *buddy = buddy_array.getBuddy(curr);
-    if (buddy == NULL)
+    if (buddy == nullptr)
     {
         return;
     }
@@ -246,13 +272,14 @@ void mergeFree(MallocMetadata *curr)
         MallocMetadata *merged = curr < buddy ? curr : buddy;
         merged->size *= 2;
         merged->is_free = true;
-        merged->next = NULL;
-        merged->prev = NULL;
+        merged->next = nullptr;
+        merged->prev = nullptr;
 
         // add to free list
         buddy_array.insertFreeBlock(merged);
 
         memory_global_metadata.num_allocated_blocks--;
+        memory_global_metadata.num_allocated_bytes += sizeof(MallocMetadata);
         memory_global_metadata.num_meta_data_bytes -= sizeof(MallocMetadata);
 
         mergeFree(merged);
@@ -270,7 +297,7 @@ void *smalloc(size_t size)
 
     if (size == 0 || size > MAX_MALLOC_SIZE)
     {
-        return NULL;
+        return nullptr;
     }
     // search for free block with at least size bytes
 
@@ -279,7 +306,7 @@ void *smalloc(size_t size)
     if (size > MAX_BLOCK_SIZE)
     {
         // allocate with mmap
-        void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void *ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (ptr == MAP_FAILED)
         {
             return nullptr;
@@ -288,6 +315,7 @@ void *smalloc(size_t size)
         MallocMetadata *metadata = (MallocMetadata *)ptr;
         metadata->size = size;
         metadata->is_free = false;
+        metadata->cookie = buddy_array.cookie;
         metadata->next = nullptr;
         metadata->prev = nullptr;
 
@@ -315,16 +343,16 @@ void *smalloc(size_t size)
         return (void *)(curr + 1);
     }
 
-    // no free block big enough was found, return null
-    return NULL;
+    // no free block big enough was found, return nullptr
+    return nullptr;
 }
 
 void *scalloc(size_t num, size_t size)
 {
     void *ptr = smalloc(num * size);
-    if (ptr == NULL)
+    if (ptr == nullptr)
     {
-        return NULL;
+        return nullptr;
     }
 
     for (size_t i = 0; i < num * size; i++)
@@ -337,20 +365,20 @@ void *scalloc(size_t num, size_t size)
 
 void sfree(void *p)
 {
-    if (p == NULL)
+    if (p == nullptr)
     {
         return;
     }
 
     MallocMetadata *metadata = buddy_array.validateMetadata((MallocMetadata *)p - 1);
 
-    if (metadata->size >= MAX_BLOCK_SIZE)
+    if (metadata->size > MAX_BLOCK_SIZE)
     {
         // free with munmap
-        munmap(metadata, metadata->size);
         memory_global_metadata.num_allocated_blocks--;
-        memory_global_metadata.num_allocated_bytes -=  metadata->size + sizeof(MallocMetadata);
+        memory_global_metadata.num_allocated_bytes -= metadata->size - sizeof(MallocMetadata);
         memory_global_metadata.num_meta_data_bytes -= sizeof(MallocMetadata);
+        munmap(metadata, metadata->size);
         return;
     }
 
@@ -365,10 +393,10 @@ void *srealloc(void *oldp, size_t size)
 {
     if (size == 0)
     {
-        return NULL;
+        return nullptr;
     }
 
-    if (oldp == NULL)
+    if (oldp == nullptr)
     {
         return smalloc(size);
     }
@@ -380,9 +408,9 @@ void *srealloc(void *oldp, size_t size)
     }
 
     void *newp = smalloc(size);
-    if (newp == NULL)
+    if (newp == nullptr)
     {
-        return NULL;
+        return nullptr;
     }
 
     for (size_t i = 0; i < metadata->size - sizeof(MallocMetadata); i++)

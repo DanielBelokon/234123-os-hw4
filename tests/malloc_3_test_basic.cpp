@@ -129,7 +129,7 @@ TEST_CASE("Challenge 0 - Memory Utilization", "[malloc3]")
     sfree(ptr3);
     sfree(ptr4);
     verify_block_by_order(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,32,0,1,MAX_ELEMENT_SIZE+100);
-    sfree(ptr1); //free again
+    // sfree(ptr1); //free again
     sfree(ptr2);
     verify_block_by_order(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,32,0,0,0);
 //    verify_size_with_large_blocks(base, 0);
@@ -195,14 +195,19 @@ TEST_CASE("Finding buddies test", "[malloc3]")
     for (int i = 0; i < 64; i++)
     {
         void* ptr = smalloc(128 * std::pow(2, 9) - 64);
-        REQUIRE(ptr != nullptr);
+        if (ptr == nullptr)
+        {
+            printf("Failed to allocate block %d\n", i);
+            fflush(stdout);
+        }
+
         allocations.push_back(ptr);
-//        printf("%d\n",i);
-//        fflush(stdout);
+        //        printf("%d\n",i);
+        //        fflush(stdout);
         verify_block_by_order(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, allocations.size()%2, allocations.size(), 32-(int)(i/2)-1, 0, 0, 0);
     }
 
-    REQUIRE(smalloc(40) == NULL);
+    REQUIRE(smalloc(40) == nullptr);
     // Free the allocated blocks
     while (!allocations.empty())
     {

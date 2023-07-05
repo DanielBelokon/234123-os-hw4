@@ -47,3 +47,5 @@ if(EXISTS ${SOURCE_DIR}/malloc_4.cpp)
 
     target_compile_options(malloc_4_test PRIVATE -Wall PRIVATE -pedantic-errors PRIVATE -Werror)
 endif()
+
+enable_testing()
