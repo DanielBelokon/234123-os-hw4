@@ -158,6 +158,9 @@ BuddyArray buddy_array;
 
 void initialAlloc()
 {
+    // check alignment
+    if ((size_t)sbrk(0) ^ 1)
+        sbrk(1);
     buddy_array.start_address = sbrk(MAX_BLOCK_SIZE * INIT_BLOCK_COUNT);
     buddy_array.head_by_size[MAX_BLOCK_POWER] = (MallocMetadata *)buddy_array.start_address;
 
@@ -250,7 +253,7 @@ void mergeFree(MallocMetadata *curr)
 
         memory_global_metadata.num_allocated_blocks--;
         memory_global_metadata.num_meta_data_bytes -= sizeof(MallocMetadata);
-        
+
         mergeFree(merged);
     }
 }
