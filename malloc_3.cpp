@@ -8,6 +8,8 @@
 #define MAX_BLOCK_SIZE (MIN_BLOCK_SIZE * KILO)
 #define KILO 1024
 
+#define MAX_MALLOC_SIZE 100000000
+
 struct MallocMetadataMetadata
 {
     size_t num_free_blocks = 0;
@@ -259,10 +261,6 @@ void mergeFree(MallocMetadata *curr)
 
 void *smalloc(size_t size)
 {
-    if (size == 0)
-    {
-        return NULL;
-    }
 
     // no allocations yet, allocate first block with requested size
     if (buddy_array.start_address == nullptr)
@@ -270,6 +268,10 @@ void *smalloc(size_t size)
         initialAlloc();
     }
 
+    if (size == 0 || size > MAX_MALLOC_SIZE)
+    {
+        return NULL;
+    }
     // search for free block with at least size bytes
 
     size = size + sizeof(MallocMetadata);
