@@ -2,57 +2,69 @@
 #include <sys/mman.h>
 #include <stdlib.h>
 
-#define MAX_BLOCK_POWER 10
-#define INIT_BLOCK_COUNT 32
-#define MIN_BLOCK_SIZE 128
-#define MAX_BLOCK_SIZE (MIN_BLOCK_SIZE * KILO)
 #define KILO 1024
+#define MAX_BLOCK_POWER 10                     // 2^10 = 1MB, sizes are powers of 2 multiplied by 128B
+#define INIT_BLOCK_COUNT 32                    // 32 * 128KB = 4MB
+#define MIN_BLOCK_SIZE 128                     // 128B
+#define MAX_BLOCK_SIZE (MIN_BLOCK_SIZE * KILO) // 128KB * 1024 = 128MB
 
 #define MAX_MALLOC_SIZE 100000000
 
 struct MallocMetadataMetadata
 {
-    size_t num_free_blocks = 0;
-    size_t num_free_bytes = 0;
-    size_t num_allocated_blocks = 0;
-    size_t num_allocated_bytes = 0;
-    size_t num_meta_data_bytes = 0;
-    size_t size_meta_data = 0;
+    size_t num_free_blocks = 0;      // number of free blocks
+    size_t num_free_bytes = 0;       // number of free bytes
+    size_t num_allocated_blocks = 0; // number of allocated blocks (including free)
+    size_t num_allocated_bytes = 0;  // number of allocated bytes (including free, excluding metadata)
+    size_t num_meta_data_bytes = 0;  // number of bytes used for metadata
+    size_t size_meta_data = 0;       // size of the metadata
 };
 
 struct MallocMetadata
 {
-    int cookie;
-    size_t size;
-    bool is_free;
-    MallocMetadata *next;
-    MallocMetadata *prev;
+    int cookie;           // cookie to check if the metadata is valid
+    size_t size;          // actual size of the block (including the metadata struct)
+    bool is_free;         // is the block free or not
+    MallocMetadata *next; // pointer to the next block in the free list of the same size
+    MallocMetadata *prev; // pointer to the previous block in the free list of the same size
 };
 
 MallocMetadataMetadata memory_global_metadata;
 
 struct BuddyArray
 {
+    // array of free blocks by size - each index is a power of 2, including 0 (hence the +1)
     MallocMetadata *head_by_size[MAX_BLOCK_POWER + 1]{nullptr};
     void *start_address = nullptr;
 
     int cookie = 0x12345678;
 
-    MallocMetadata *getBuddy(MallocMetadata *address)
+    /// @brief get a block's buddy (the block it was split from)
+    /// @param address the address of the block
+    /// @return the buddy of the block
+    MallocMetadata *getBuddy(MallocMetadata *block, size_t size = 0)
     {
-        if (address == nullptr || address < start_address || address >= (MallocMetadata *)((char *)start_address + MAX_BLOCK_SIZE * INIT_BLOCK_COUNT))
+        validateMetadata(block);
+        if (size == 0)
+            size = block->size;
+
+        if (block == nullptr || block < start_address || block >= (MallocMetadata *)((char *)start_address + MAX_BLOCK_SIZE * INIT_BLOCK_COUNT))
         {
             return nullptr;
         }
 
-        if (address->size >= MAX_BLOCK_SIZE)
+        if (size >= MAX_BLOCK_SIZE)
         {
             return nullptr;
         }
 
-        return validateMetadata((MallocMetadata *)((size_t)address ^ address->size));
+        // assume address is aligned to the block size
+        return validateMetadata((MallocMetadata *)((size_t)block ^ size));
     }
 
+    /// @brief get the index of the block in the array
+    /// @param size the size of the block (including the metadata struct size)
+    /// @return the index of the block in the array
     int getIndex(size_t size)
     {
         int index = 0;
@@ -65,6 +77,9 @@ struct BuddyArray
         return index;
     }
 
+    /// @brief get the index of the first available block in the array that can fit the given size
+    /// @param size the size of the block (including the metadata struct size)
+    /// @return the index of the first available block in the array that can fit the given size
     int getAvailableIndex(size_t size)
     {
         int index = getIndex(size);
@@ -80,6 +95,8 @@ struct BuddyArray
         return -1;
     }
 
+    /// @brief remove the block from the free list
+    /// @param block the block to remove, must be a free block in the free list
     void removeFreeBlock(MallocMetadata *block)
     {
         validateMetadata(block);
@@ -89,15 +106,18 @@ struct BuddyArray
             return;
         }
 
+        // if the block is the head of the list, update the head
         if (block->prev == nullptr)
         {
             head_by_size[index] = block->next;
         }
+        // otherwise, update the previous block to point to the next block
         else
         {
             block->prev->next = block->next;
         }
 
+        // if the block is not the tail of the list
         if (block->next != nullptr)
         {
             block->next->prev = block->prev;
@@ -110,6 +130,8 @@ struct BuddyArray
         memory_global_metadata.num_free_bytes -= block->size - sizeof(MallocMetadata);
     }
 
+    /// @brief insert the block to the free list
+    /// @param block the block to insert, must be a free block
     void insertFreeBlock(MallocMetadata *block)
     {
         validateMetadata(block);
@@ -164,6 +186,104 @@ struct BuddyArray
 
         return metadata;
     }
+
+    void splitAndFree(MallocMetadata *curr, size_t size)
+    {
+        validateMetadata(curr);
+        if (curr->size / 2 < size || curr->size / 2 < MIN_BLOCK_SIZE)
+        {
+            return;
+        }
+
+        // split
+        MallocMetadata *buddy = (MallocMetadata *)((char *)curr + curr->size / 2);
+
+        buddy->size = curr->size / 2;
+        buddy->is_free = true;
+        buddy->next = nullptr;
+        buddy->prev = nullptr;
+        buddy->cookie = cookie;
+
+        curr->size /= 2;
+
+        // add to free list
+        insertFreeBlock(buddy);
+
+        memory_global_metadata.num_allocated_blocks++;
+        memory_global_metadata.num_allocated_bytes -= sizeof(MallocMetadata);
+        memory_global_metadata.num_meta_data_bytes += sizeof(MallocMetadata);
+        splitAndFree(curr, size);
+    }
+
+    MallocMetadata *mergeFree(MallocMetadata *curr)
+    {
+        validateMetadata(curr);
+        if (curr->size >= MAX_BLOCK_SIZE)
+        {
+            return curr;
+        }
+
+        MallocMetadata *buddy = getBuddy(curr);
+        if (buddy == nullptr)
+        {
+            return curr;
+        }
+
+        if (buddy->is_free)
+        {
+            // remove from free list
+            removeFreeBlock(buddy);
+            removeFreeBlock(curr);
+
+            // merge
+            MallocMetadata *merged = curr < buddy ? curr : buddy;
+            merged->size *= 2;
+            merged->is_free = true;
+            merged->next = nullptr;
+            merged->prev = nullptr;
+
+            // add to free list
+            insertFreeBlock(merged);
+
+            memory_global_metadata.num_allocated_blocks--;
+            memory_global_metadata.num_allocated_bytes += sizeof(MallocMetadata);
+            memory_global_metadata.num_meta_data_bytes -= sizeof(MallocMetadata);
+
+            return mergeFree(merged);
+        }
+
+        return curr;
+    }
+
+    /// @brief only merge if all the required buddies are free for the given size
+    /// @param block the block to merge
+    /// @param desired_size the desired size of the block after the merge
+    /// @return
+    MallocMetadata *tryMerge(MallocMetadata *block, size_t desired_size)
+    {
+        validateMetadata(block);
+        if (block->size >= MAX_BLOCK_SIZE || desired_size > MAX_BLOCK_SIZE)
+        {
+            return nullptr;
+        }
+
+        MallocMetadata *nextBuddy = block;
+        // check if all required buddies are free
+        for (int i = getIndex(block->size); i < getIndex(desired_size); i++)
+        {
+            MallocMetadata *buddy = getBuddy(nextBuddy, MIN_BLOCK_SIZE * (1 << i));
+            if (buddy == nullptr || !buddy->is_free)
+            {
+                return nullptr;
+            }
+
+            nextBuddy = buddy < nextBuddy ? buddy : nextBuddy;
+        }
+
+        // we can merge all the blocks
+        insertFreeBlock(block);
+        return mergeFree(block);
+    }
 };
 
 BuddyArray buddy_array;
@@ -192,24 +312,22 @@ void initialAlloc()
 
     buddy_array.cookie = 0x1337; // todo: randomize
 
+    // init metadata
     void *curBlock = buddy_array.start_address;
-    for (int i = 0; i < INIT_BLOCK_COUNT - 1; i++)
+    for (int i = 0; i < INIT_BLOCK_COUNT; i++)
     {
         MallocMetadata *metadata = (MallocMetadata *)curBlock;
         metadata->size = MAX_BLOCK_SIZE;
         metadata->is_free = true;
-        metadata->next = (MallocMetadata *)((char *)curBlock + MAX_BLOCK_SIZE);
-        metadata->prev = nullptr;
+
+        // last block has no next
+        metadata->next = i != INIT_BLOCK_COUNT - 1 ? (MallocMetadata *)((char *)curBlock + MAX_BLOCK_SIZE) : nullptr;
+
+        // first block has no prev
+        metadata->prev = i != 0 ? (MallocMetadata *)((char *)curBlock - MAX_BLOCK_SIZE) : nullptr;
+
         metadata->cookie = buddy_array.cookie;
         curBlock = metadata->next;
-    }
-
-    // set prev
-    for (int i = 0; i < INIT_BLOCK_COUNT - 1; i++)
-    {
-        MallocMetadata *metadata = (MallocMetadata *)curBlock;
-        metadata->prev = (MallocMetadata *)((char *)curBlock - MAX_BLOCK_SIZE);
-        curBlock = metadata->prev;
     }
 
     memory_global_metadata.num_allocated_blocks = INIT_BLOCK_COUNT;
@@ -220,73 +338,33 @@ void initialAlloc()
     memory_global_metadata.size_meta_data = sizeof(MallocMetadata);
 }
 
-void splitAndFree(MallocMetadata *curr, size_t size)
+/// @brief allocate memory using mmap, size should include metadata
+/// @param size the size of the allocation including metadata
+/// @return pointer to the allocated memory, not including metadata (user pointer)
+void *mmap_smalloc(size_t size)
 {
-    buddy_array.validateMetadata(curr);
-    if (curr->size / 2 < size || curr->size / 2 < MIN_BLOCK_SIZE)
+    // allocate with mmap
+    void *ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (ptr == MAP_FAILED)
     {
-        return;
+        return nullptr;
     }
 
-    // split
-    MallocMetadata *buddy = (MallocMetadata *)((char *)curr + curr->size / 2);
-
-    buddy->size = curr->size / 2;
-    buddy->is_free = true;
-    buddy->next = nullptr;
-    buddy->prev = nullptr;
-    buddy->cookie = buddy_array.cookie;
-
-    curr->size /= 2;
-
-    // add to free list
-    buddy_array.insertFreeBlock(buddy);
+    MallocMetadata *metadata = (MallocMetadata *)ptr;
+    metadata->size = size;
+    metadata->is_free = false;
+    metadata->cookie = buddy_array.cookie;
+    metadata->next = nullptr;
+    metadata->prev = nullptr;
 
     memory_global_metadata.num_allocated_blocks++;
-    memory_global_metadata.num_allocated_bytes -= sizeof(MallocMetadata);
     memory_global_metadata.num_meta_data_bytes += sizeof(MallocMetadata);
-    splitAndFree(curr, size);
+    memory_global_metadata.num_allocated_bytes += size - sizeof(MallocMetadata);
+
+    return (void *)(metadata + 1);
 }
 
-void mergeFree(MallocMetadata *curr)
-{
-    buddy_array.validateMetadata(curr);
-    if (curr->size >= MAX_BLOCK_SIZE)
-    {
-        return;
-    }
-
-    MallocMetadata *buddy = buddy_array.getBuddy(curr);
-    if (buddy == nullptr)
-    {
-        return;
-    }
-
-    if (buddy->is_free)
-    {
-        // remove from free list
-        buddy_array.removeFreeBlock(buddy);
-        buddy_array.removeFreeBlock(curr);
-
-        // merge
-        MallocMetadata *merged = curr < buddy ? curr : buddy;
-        merged->size *= 2;
-        merged->is_free = true;
-        merged->next = nullptr;
-        merged->prev = nullptr;
-
-        // add to free list
-        buddy_array.insertFreeBlock(merged);
-
-        memory_global_metadata.num_allocated_blocks--;
-        memory_global_metadata.num_allocated_bytes += sizeof(MallocMetadata);
-        memory_global_metadata.num_meta_data_bytes -= sizeof(MallocMetadata);
-
-        mergeFree(merged);
-    }
-}
-
-void *smalloc(size_t size)
+void *smalloc(size_t user_size)
 {
 
     // no allocations yet, allocate first block with requested size
@@ -295,35 +373,17 @@ void *smalloc(size_t size)
         initialAlloc();
     }
 
-    if (size == 0 || size > MAX_MALLOC_SIZE)
+    if (user_size == 0 || user_size > MAX_MALLOC_SIZE)
     {
         return nullptr;
     }
     // search for free block with at least size bytes
 
-    size = size + sizeof(MallocMetadata);
+    size_t size = user_size + sizeof(MallocMetadata);
 
     if (size > MAX_BLOCK_SIZE)
     {
-        // allocate with mmap
-        void *ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (ptr == MAP_FAILED)
-        {
-            return nullptr;
-        }
-
-        MallocMetadata *metadata = (MallocMetadata *)ptr;
-        metadata->size = size;
-        metadata->is_free = false;
-        metadata->cookie = buddy_array.cookie;
-        metadata->next = nullptr;
-        metadata->prev = nullptr;
-
-        memory_global_metadata.num_allocated_blocks++;
-        memory_global_metadata.num_meta_data_bytes += sizeof(MallocMetadata);
-        memory_global_metadata.num_allocated_bytes += size - sizeof(MallocMetadata);
-
-        return (void *)(metadata + 1);
+        return mmap_smalloc(size);
     }
 
     int index = buddy_array.getAvailableIndex(size);
@@ -339,7 +399,7 @@ void *smalloc(size_t size)
         curr->is_free = false;
 
         buddy_array.removeFreeBlock(curr);
-        splitAndFree(curr, size);
+        buddy_array.splitAndFree(curr, size);
         return (void *)(curr + 1);
     }
 
@@ -347,6 +407,10 @@ void *smalloc(size_t size)
     return nullptr;
 }
 
+/// @brief allocate a block of memory with size * num bytes and initialize all bytes to 0
+/// @param num the number of elements
+/// @param size the size of each element
+/// @return pointer to the allocated memory
 void *scalloc(size_t num, size_t size)
 {
     void *ptr = smalloc(num * size);
@@ -386,28 +450,41 @@ void sfree(void *p)
 
     // add to free list sorted by address
     buddy_array.insertFreeBlock(metadata);
-    mergeFree(metadata);
+    buddy_array.mergeFree(metadata);
 }
 
-void *srealloc(void *oldp, size_t size)
+void *srealloc(void *oldp, size_t user_size)
 {
-    if (size == 0)
+    if (user_size == 0)
     {
         return nullptr;
     }
 
     if (oldp == nullptr)
     {
-        return smalloc(size);
+        return smalloc(user_size);
     }
 
     MallocMetadata *metadata = buddy_array.validateMetadata((MallocMetadata *)oldp - 1);
-    if (metadata->size  >= size + sizeof(MallocMetadata))
+
+    // if the old block is big enough, return it
+    if (metadata->size >= user_size + sizeof(MallocMetadata))
     {
         return oldp;
     }
 
-    void *newp = smalloc(size);
+    // if we can merge enough buddies to get a block big enough, merge and return
+    MallocMetadata *merged = buddy_array.tryMerge(metadata, user_size + sizeof(MallocMetadata));
+    if (merged != nullptr)
+    {
+        merged->is_free = false;
+        buddy_array.removeFreeBlock(merged);
+        buddy_array.splitAndFree(merged, user_size + sizeof(MallocMetadata));
+        return (void *)(merged + 1);
+    }
+
+    // otherwise, allocate a new block and copy the data
+    void *newp = smalloc(user_size);
     if (newp == nullptr)
     {
         return nullptr;
