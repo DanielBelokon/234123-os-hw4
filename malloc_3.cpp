@@ -1,6 +1,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define KILO 1024
 #define MAX_BLOCK_POWER 10                     // 2^10 = 1MB, sizes are powers of 2 multiplied by 128B
@@ -295,11 +296,7 @@ void initialAlloc()
     // buddy_array.start_address = (char *)sbrk(MAX_BLOCK_SIZE * INIT_BLOCK_COUNT + alignment) + alignment;
 
     long alignment_mask = MAX_BLOCK_SIZE - 1;
-
-    // Get the current break.
     long current_address = (long)sbrk(0);
-
-    // Calculate the misalignment of the current break, if any.
     long misalignment = current_address & alignment_mask;
 
     // If misaligned, calculate the adjustment to the next block, otherwise 0.
@@ -310,7 +307,7 @@ void initialAlloc()
 
     buddy_array.head_by_size[MAX_BLOCK_POWER] = (MallocMetadata *)buddy_array.start_address;
 
-    buddy_array.cookie = 0x1337; // todo: randomize
+    buddy_array.cookie = rand();
 
     // init metadata
     void *curBlock = buddy_array.start_address;
@@ -471,6 +468,24 @@ void *srealloc(void *oldp, size_t user_size)
     if (metadata->size >= user_size + sizeof(MallocMetadata))
     {
         return oldp;
+    }
+
+    // if mmap block, allocate new block and copy data
+    if (metadata->size > MAX_BLOCK_SIZE)
+    {
+        void *newp = mmap_smalloc(user_size + sizeof(MallocMetadata));
+        if (newp == nullptr)
+        {
+            return nullptr;
+        }
+
+        for (size_t i = 0; i < metadata->size - sizeof(MallocMetadata); i++)
+        {
+            ((char *)newp)[i] = ((char *)oldp)[i];
+        }
+
+        sfree(oldp);
+        return newp;
     }
 
     // if we can merge enough buddies to get a block big enough, merge and return
